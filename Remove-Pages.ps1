@@ -106,14 +106,23 @@ foreach ($pdf in $pdfFiles) {
         $pdDoc.DeletePages($pageIndex, $pageIndex)
     }
 
-    # Save over the original file
-    $pdDoc.Save(1, $filePath)  # 1 = PDSaveFull
+    # Save to a temp file, close (releases lock), then replace original.
+    # PDDoc cannot overwrite the file it has open — the save silently fails.
+    $tempPath = $filePath + ".tmp"
+    $saveOk = $pdDoc.Save(1, $tempPath)  # 1 = PDSaveFull
 
     $pdDoc.Close() | Out-Null
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
 
-    $remainingPages = $pageCount - $pagesToRemove.Count
-    Write-Host "  Saved. $remainingPages page(s) remaining."
+    if ($saveOk) {
+        Remove-Item -LiteralPath $filePath -Force
+        Rename-Item -LiteralPath $tempPath -NewName (Split-Path $filePath -Leaf)
+        $remainingPages = $pageCount - $pagesToRemove.Count
+        Write-Host "  Saved. $remainingPages page(s) remaining."
+    } else {
+        Write-Host "  ERROR: Save failed for '$($pdf.Name)'."
+        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
+    }
 }
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
