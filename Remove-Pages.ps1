@@ -2,6 +2,8 @@
 # Remove-Pages.ps1
 # Removes pages containing a specified phrase from all PDFs
 # in a user-selected folder using Adobe Acrobat Pro COM objects.
+# Modified PDFs are saved to an "Output" subfolder; originals
+# are left untouched.
 # ============================================================
 
 # --- Configuration ---
@@ -26,6 +28,12 @@ if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
 $folderPath = $folderBrowser.SelectedPath
 Write-Host "Selected folder: $folderPath"
 
+# --- Create Output subfolder ---
+$outputPath = Join-Path $folderPath "Output"
+if (-not (Test-Path -LiteralPath $outputPath)) {
+    New-Item -Path $outputPath -ItemType Directory | Out-Null
+}
+
 # --- Gather PDF files ---
 $pdfFiles = Get-ChildItem -Path $folderPath -Filter "*.pdf" -File
 
@@ -37,13 +45,7 @@ if ($pdfFiles.Count -eq 0) {
 Write-Host "Found $($pdfFiles.Count) PDF file(s). Processing..."
 Write-Host ""
 
-# --- Two-pass approach per PDF ---
-# Pass 1: Open with AVDoc (read-only) for text extraction — the AV layer
-#         is required for CreatePageHilite to work.  No modifications are
-#         made, so closing triggers no save dialog even with GPO.
-# Pass 2: Reopen with PDDoc (no UI), delete pages, save to a temp file,
-#         close, and replace the original via PowerShell.
-
+# --- Process each PDF ---
 $acrobatApp = New-Object -ComObject AcroExch.App
 $acrobatApp.Hide()
 
@@ -51,7 +53,6 @@ foreach ($pdf in $pdfFiles) {
     $filePath = $pdf.FullName
     Write-Host "Processing: $($pdf.Name)"
 
-    # --- Pass 1: read-only text extraction via AVDoc ---
     $avDoc = New-Object -ComObject AcroExch.AVDoc
 
     if (-not $avDoc.Open($filePath, "")) {
@@ -63,6 +64,7 @@ foreach ($pdf in $pdfFiles) {
     $pdDoc = $avDoc.GetPDDoc()
     $pageCount = $pdDoc.GetNumPages()
 
+    # --- Text extraction: find pages that contain the phrase ---
     $pagesToRemove = @()
 
     for ($i = 0; $i -lt $pageCount; $i++) {
@@ -88,81 +90,53 @@ foreach ($pdf in $pdfFiles) {
         }
     }
 
-    # Close AVDoc without any modifications — no save dialog
-    $avDoc.Close($true)
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
-
     if ($pagesToRemove.Count -eq 0) {
         Write-Host "  No matching pages found. Skipping."
+        $avDoc.Close($true)
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
     }
 
     if ($pagesToRemove.Count -eq $pageCount) {
         Write-Host "  WARNING: All $pageCount page(s) match the phrase. Skipping file to avoid an empty document."
+        $avDoc.Close($true)
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
     }
 
     Write-Host "  Removing $($pagesToRemove.Count) of $pageCount page(s)..."
 
-    # --- Pass 2: build a new PDF with only the pages to keep ---
-    # Instead of DeletePages + Save (which fails at the PD layer),
-    # create a fresh PDDoc and InsertPages for each page we keep.
-    $removeSet = @{}
-    $pagesToRemove | ForEach-Object { $removeSet[$_] = $true }
+    # --- Delete pages in reverse order so indices stay valid ---
+    $pagesToRemove = $pagesToRemove | Sort-Object -Descending
 
-    $srcDoc = New-Object -ComObject AcroExch.PDDoc
-
-    if (-not $srcDoc.Open($filePath)) {
-        Write-Host "  ERROR: Could not reopen '$($pdf.Name)' for editing."
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($srcDoc) | Out-Null
-        continue
+    foreach ($pageIndex in $pagesToRemove) {
+        $pdDoc.DeletePages($pageIndex, $pageIndex)
     }
 
-    $dstDoc = New-Object -ComObject AcroExch.PDDoc
-    $dstDoc.Create()
+    # --- Save modified PDF to the Output subfolder ---
+    $savePath = Join-Path $outputPath $pdf.Name
+    $saveOk  = $pdDoc.Save(1, $savePath)  # 1 = PDSaveFull
 
-    $insertOk = $true
-    for ($i = 0; $i -lt $pageCount; $i++) {
-        if (-not $removeSet.ContainsKey($i)) {
-            # InsertPages(nAfter, srcDoc, nStart, nPages, bBookmarks)
-            # nAfter = -1 inserts before first page; GetNumPages()-1 appends
-            $nAfter = $dstDoc.GetNumPages() - 1
-            $ok = $dstDoc.InsertPages($nAfter, $srcDoc, $i, 1, $false)
-            if (-not $ok) {
-                Write-Host "  ERROR: Failed to copy page $($i + 1)."
-                $insertOk = $false
-                break
-            }
-        }
-    }
-
-    $tempPath = $filePath -replace '\.pdf$', '_temp.pdf'
-    $saveOk  = $false
-    if ($insertOk) {
-        $saveOk = $dstDoc.Save(1, $tempPath)  # 1 = PDSaveFull
-    }
-
-    $dstDoc.Close() | Out-Null
-    $srcDoc.Close() | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($dstDoc) | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($srcDoc) | Out-Null
+    # After Save the dirty flag is cleared, so Close won't prompt
+    $avDoc.Close($true)
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
 
     if ($saveOk) {
-        Remove-Item -LiteralPath $filePath -Force
-        Rename-Item -LiteralPath $tempPath -NewName (Split-Path $filePath -Leaf)
         $remainingPages = $pageCount - $pagesToRemove.Count
-        Write-Host "  Saved. $remainingPages page(s) remaining."
+        Write-Host "  Saved to Output\$($pdf.Name) — $remainingPages page(s) remaining."
     } else {
         Write-Host "  ERROR: Save failed for '$($pdf.Name)'."
-        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
     }
 }
 
+# --- Cleanup ---
 $acrobatApp.Exit()
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($acrobatApp) | Out-Null
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
 
 Write-Host ""
-Write-Host "Done. All files processed."
+Write-Host "Done. All files processed. Modified PDFs are in: $outputPath"
