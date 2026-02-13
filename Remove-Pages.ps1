@@ -65,9 +65,10 @@ if ($pdfFiles.Count -eq 0) {
 Write-Host "Found $($pdfFiles.Count) PDF file(s). Processing..."
 Write-Host ""
 
-# --- Counters for summary ---
+# --- Counters and results list for summary ---
 $totalProcessed = 0
 $totalModified  = 0
+$results        = @()
 
 # --- Process each PDF ---
 $acrobatApp = New-Object -ComObject AcroExch.App
@@ -123,6 +124,7 @@ foreach ($pdf in $pdfFiles) {
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         $totalProcessed++
+        $results += [PSCustomObject]@{ FileName = $pdf.Name; PagesRemoved = 0 }
         continue
     }
 
@@ -153,10 +155,12 @@ foreach ($pdf in $pdfFiles) {
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
 
     if ($saveOk) {
-        $remainingPages = $pageCount - $pagesToRemove.Count
+        $removedCount   = $pagesToRemove.Count
+        $remainingPages = $pageCount - $removedCount
         Write-Host "  Saved ($remainingPages page(s) remaining)."
         $totalProcessed++
         $totalModified++
+        $results += [PSCustomObject]@{ FileName = $pdf.Name; PagesRemoved = $removedCount }
     } else {
         Write-Host "  ERROR: Save failed for '$($pdf.Name)'."
     }
@@ -171,10 +175,19 @@ $acrobatApp.Exit()
 Write-Host ""
 Write-Host "Done. All files processed to: $outputFolder"
 
-# --- Summary popup ---
-[System.Windows.Forms.MessageBox]::Show(
-    "Total Processed: $totalProcessed`nTotal Modified: $totalModified",
+# --- Export CSV to the output folder with a timestamp filename ---
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$csvPath   = Join-Path $outputFolder "$timestamp.csv"
+$results | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+
+# --- Summary popup with option to view the CSV ---
+$answer = [System.Windows.Forms.MessageBox]::Show(
+    "Total Processed: $totalProcessed`nTotal Modified: $totalModified`n`nWould you like to view the summary?",
     "Remove Pages - Complete",
-    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
     [System.Windows.Forms.MessageBoxIcon]::Information
-) | Out-Null
+)
+
+if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) {
+    Start-Process "excel.exe" -ArgumentList "`"$csvPath`""
+}
