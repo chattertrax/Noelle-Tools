@@ -105,28 +105,48 @@ foreach ($pdf in $pdfFiles) {
 
     Write-Host "  Removing $($pagesToRemove.Count) of $pageCount page(s)..."
 
-    # --- Pass 2: delete pages & save via PDDoc (no UI) ---
-    $pdDoc2 = New-Object -ComObject AcroExch.PDDoc
+    # --- Pass 2: build a new PDF with only the pages to keep ---
+    # Instead of DeletePages + Save (which fails at the PD layer),
+    # create a fresh PDDoc and InsertPages for each page we keep.
+    $removeSet = @{}
+    $pagesToRemove | ForEach-Object { $removeSet[$_] = $true }
 
-    if (-not $pdDoc2.Open($filePath)) {
+    $srcDoc = New-Object -ComObject AcroExch.PDDoc
+
+    if (-not $srcDoc.Open($filePath)) {
         Write-Host "  ERROR: Could not reopen '$($pdf.Name)' for editing."
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc2) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($srcDoc) | Out-Null
         continue
     }
 
-    # Delete pages in reverse order so indices remain valid
-    $pagesToRemove = $pagesToRemove | Sort-Object -Descending
+    $dstDoc = New-Object -ComObject AcroExch.PDDoc
+    $dstDoc.Create()
 
-    foreach ($pageIndex in $pagesToRemove) {
-        $pdDoc2.DeletePages($pageIndex, $pageIndex)
+    $insertOk = $true
+    for ($i = 0; $i -lt $pageCount; $i++) {
+        if (-not $removeSet.ContainsKey($i)) {
+            # InsertPages(nAfter, srcDoc, nStart, nPages, bBookmarks)
+            # nAfter = -1 inserts before first page; GetNumPages()-1 appends
+            $nAfter = $dstDoc.GetNumPages() - 1
+            $ok = $dstDoc.InsertPages($nAfter, $srcDoc, $i, 1, $false)
+            if (-not $ok) {
+                Write-Host "  ERROR: Failed to copy page $($i + 1)."
+                $insertOk = $false
+                break
+            }
+        }
     }
 
-    # Save to temp file, close (releases lock), then replace original
-    $tempPath = $filePath + ".tmp"
-    $saveOk = $pdDoc2.Save(1, $tempPath)  # 1 = PDSaveFull
+    $tempPath = $filePath -replace '\.pdf$', '_temp.pdf'
+    $saveOk  = $false
+    if ($insertOk) {
+        $saveOk = $dstDoc.Save(1, $tempPath)  # 1 = PDSaveFull
+    }
 
-    $pdDoc2.Close() | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc2) | Out-Null
+    $dstDoc.Close() | Out-Null
+    $srcDoc.Close() | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($dstDoc) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($srcDoc) | Out-Null
 
     if ($saveOk) {
         Remove-Item -LiteralPath $filePath -Force
