@@ -37,33 +37,38 @@ if ($pdfFiles.Count -eq 0) {
 Write-Host "Found $($pdfFiles.Count) PDF file(s). Processing..."
 Write-Host ""
 
-# --- Process each PDF using PDDoc only (no AVDoc UI layer) ---
-# Working entirely at the PD layer avoids all UI dialogs, including
-# GPO-enforced save confirmations that cannot be suppressed.
+# --- Two-pass approach per PDF ---
+# Pass 1: Open with AVDoc (read-only) for text extraction — the AV layer
+#         is required for CreatePageHilite to work.  No modifications are
+#         made, so closing triggers no save dialog even with GPO.
+# Pass 2: Reopen with PDDoc (no UI), delete pages, save to a temp file,
+#         close, and replace the original via PowerShell.
+
+$acrobatApp = New-Object -ComObject AcroExch.App
+$acrobatApp.Hide()
 
 foreach ($pdf in $pdfFiles) {
     $filePath = $pdf.FullName
     Write-Host "Processing: $($pdf.Name)"
 
-    $pdDoc = New-Object -ComObject AcroExch.PDDoc
+    # --- Pass 1: read-only text extraction via AVDoc ---
+    $avDoc = New-Object -ComObject AcroExch.AVDoc
 
-    if (-not $pdDoc.Open($filePath)) {
+    if (-not $avDoc.Open($filePath, "")) {
         Write-Host "  WARNING: Could not open '$($pdf.Name)'. Skipping."
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
     }
 
+    $pdDoc = $avDoc.GetPDDoc()
     $pageCount = $pdDoc.GetNumPages()
 
-    # Collect indices of pages to remove.
-    # Uses native Acrobat COM text-selection objects (HiliteList,
-    # PDPage, PDTextSelect) — all PD-layer, no UI involved.
     $pagesToRemove = @()
 
     for ($i = 0; $i -lt $pageCount; $i++) {
         $pdPage   = $pdDoc.AcquirePage($i)
         $hilite   = New-Object -ComObject AcroExch.HiliteList
-        $hilite.Add(0, 32767)                         # select all text on the page
+        $hilite.Add(0, 32767)
         $textSelect = $pdPage.CreatePageHilite($hilite)
 
         $pageText = ""
@@ -83,36 +88,45 @@ foreach ($pdf in $pdfFiles) {
         }
     }
 
+    # Close AVDoc without any modifications — no save dialog
+    $avDoc.Close($true)
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
+
     if ($pagesToRemove.Count -eq 0) {
         Write-Host "  No matching pages found. Skipping."
-        $pdDoc.Close() | Out-Null
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         continue
     }
 
     if ($pagesToRemove.Count -eq $pageCount) {
         Write-Host "  WARNING: All $pageCount page(s) match the phrase. Skipping file to avoid an empty document."
-        $pdDoc.Close() | Out-Null
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         continue
     }
 
     Write-Host "  Removing $($pagesToRemove.Count) of $pageCount page(s)..."
 
+    # --- Pass 2: delete pages & save via PDDoc (no UI) ---
+    $pdDoc2 = New-Object -ComObject AcroExch.PDDoc
+
+    if (-not $pdDoc2.Open($filePath)) {
+        Write-Host "  ERROR: Could not reopen '$($pdf.Name)' for editing."
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc2) | Out-Null
+        continue
+    }
+
     # Delete pages in reverse order so indices remain valid
     $pagesToRemove = $pagesToRemove | Sort-Object -Descending
 
     foreach ($pageIndex in $pagesToRemove) {
-        $pdDoc.DeletePages($pageIndex, $pageIndex)
+        $pdDoc2.DeletePages($pageIndex, $pageIndex)
     }
 
-    # Save to a temp file, close (releases lock), then replace original.
-    # PDDoc cannot overwrite the file it has open — the save silently fails.
+    # Save to temp file, close (releases lock), then replace original
     $tempPath = $filePath + ".tmp"
-    $saveOk = $pdDoc.Save(1, $tempPath)  # 1 = PDSaveFull
+    $saveOk = $pdDoc2.Save(1, $tempPath)  # 1 = PDSaveFull
 
-    $pdDoc.Close() | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
+    $pdDoc2.Close() | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc2) | Out-Null
 
     if ($saveOk) {
         Remove-Item -LiteralPath $filePath -Force
@@ -124,6 +138,9 @@ foreach ($pdf in $pdfFiles) {
         if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
     }
 }
+
+$acrobatApp.Exit()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($acrobatApp) | Out-Null
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
 
