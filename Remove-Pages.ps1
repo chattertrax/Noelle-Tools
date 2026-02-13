@@ -7,7 +7,7 @@
 # --- Configuration ---
 # Set the phrase to search for (case-insensitive match).
 # Any page containing this phrase anywhere in its text will be removed.
-$Phrase = "REPLACE WITH YOUR PHRASE"
+$Phrase = "Information Missing on the Document"
 
 # --- Folder Selection Dialog ---
 Add-Type -AssemblyName System.Windows.Forms
