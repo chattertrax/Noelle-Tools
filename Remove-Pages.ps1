@@ -55,33 +55,29 @@ foreach ($pdf in $pdfFiles) {
     $pdDoc = $avDoc.GetPDDoc()
     $pageCount = $pdDoc.GetNumPages()
 
-    # Collect indices of pages to remove
+    # Collect indices of pages to remove.
+    # Uses native Acrobat COM text-selection objects (HiliteList,
+    # PDPage, PDTextSelect) instead of GetJSObject(), which has
+    # argument-marshalling issues in PowerShell.
     $pagesToRemove = @()
-    $jsObj = $pdDoc.GetJSObject()
 
     for ($i = 0; $i -lt $pageCount; $i++) {
-        # Extract full page text via Acrobat JavaScript bridge.
-        # Use GetType().InvokeMember() because PowerShell's default
-        # COM marshalling passes integers in a way the JSObject
-        # bridge does not accept (throws "Value does not fall within
-        # the expected range").
-        $bindFlags = [System.Reflection.BindingFlags]::InvokeMethod
-        $numWords = $jsObj.GetType().InvokeMember(
-            "getPageNumWords", $bindFlags, $null, $jsObj, @($i)
-        )
-        $pageTextBuilder = New-Object System.Text.StringBuilder
+        $pdPage   = $pdDoc.AcquirePage($i)
+        $hilite   = New-Object -ComObject AcroExch.HiliteList
+        $hilite.Add(0, 32767)                         # select all text on the page
+        $textSelect = $pdPage.CreatePageHilite($hilite)
 
-        for ($w = 0; $w -lt $numWords; $w++) {
-            $word = $jsObj.GetType().InvokeMember(
-                "getPageNthWord", $bindFlags, $null, $jsObj, @($i, $w, $false)
-            )
-            if ($w -gt 0) {
-                [void]$pageTextBuilder.Append(" ")
+        $pageText = ""
+        if ($textSelect) {
+            $numText = $textSelect.GetNumText()
+            for ($t = 0; $t -lt $numText; $t++) {
+                $pageText += $textSelect.GetText($t)
             }
-            [void]$pageTextBuilder.Append($word)
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($textSelect) | Out-Null
         }
 
-        $pageText = $pageTextBuilder.ToString()
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($hilite)  | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdPage)  | Out-Null
 
         if ($pageText -match [regex]::Escape($Phrase)) {
             $pagesToRemove += $i
