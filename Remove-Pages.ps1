@@ -39,6 +39,7 @@ Write-Host ""
 
 # --- Initialize Acrobat COM object ---
 $acrobatApp = New-Object -ComObject AcroExch.App
+$acrobatApp.Hide()   # run in background to suppress all UI dialogs
 
 foreach ($pdf in $pdfFiles) {
     $filePath = $pdf.FullName
