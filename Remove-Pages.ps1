@@ -60,12 +60,21 @@ foreach ($pdf in $pdfFiles) {
     $jsObj = $pdDoc.GetJSObject()
 
     for ($i = 0; $i -lt $pageCount; $i++) {
-        # Extract full page text via Acrobat JavaScript bridge
-        $numWords = $jsObj.getPageNumWords($i)
+        # Extract full page text via Acrobat JavaScript bridge.
+        # Use GetType().InvokeMember() because PowerShell's default
+        # COM marshalling passes integers in a way the JSObject
+        # bridge does not accept (throws "Value does not fall within
+        # the expected range").
+        $bindFlags = [System.Reflection.BindingFlags]::InvokeMethod
+        $numWords = $jsObj.GetType().InvokeMember(
+            "getPageNumWords", $bindFlags, $null, $jsObj, @($i)
+        )
         $pageTextBuilder = New-Object System.Text.StringBuilder
 
         for ($w = 0; $w -lt $numWords; $w++) {
-            $word = $jsObj.getPageNthWord($i, $w, $false)
+            $word = $jsObj.GetType().InvokeMember(
+                "getPageNthWord", $bindFlags, $null, $jsObj, @($i, $w, $false)
+            )
             if ($w -gt 0) {
                 [void]$pageTextBuilder.Append(" ")
             }
