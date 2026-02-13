@@ -37,29 +37,27 @@ if ($pdfFiles.Count -eq 0) {
 Write-Host "Found $($pdfFiles.Count) PDF file(s). Processing..."
 Write-Host ""
 
-# --- Initialize Acrobat COM object ---
-$acrobatApp = New-Object -ComObject AcroExch.App
-$acrobatApp.Hide()   # run in background to suppress all UI dialogs
+# --- Process each PDF using PDDoc only (no AVDoc UI layer) ---
+# Working entirely at the PD layer avoids all UI dialogs, including
+# GPO-enforced save confirmations that cannot be suppressed.
 
 foreach ($pdf in $pdfFiles) {
     $filePath = $pdf.FullName
     Write-Host "Processing: $($pdf.Name)"
 
-    $avDoc = New-Object -ComObject AcroExch.AVDoc
+    $pdDoc = New-Object -ComObject AcroExch.PDDoc
 
-    if (-not $avDoc.Open($filePath, "")) {
+    if (-not $pdDoc.Open($filePath)) {
         Write-Host "  WARNING: Could not open '$($pdf.Name)'. Skipping."
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         continue
     }
 
-    $pdDoc = $avDoc.GetPDDoc()
     $pageCount = $pdDoc.GetNumPages()
 
     # Collect indices of pages to remove.
     # Uses native Acrobat COM text-selection objects (HiliteList,
-    # PDPage, PDTextSelect) instead of GetJSObject(), which has
-    # argument-marshalling issues in PowerShell.
+    # PDPage, PDTextSelect) — all PD-layer, no UI involved.
     $pagesToRemove = @()
 
     for ($i = 0; $i -lt $pageCount; $i++) {
@@ -87,17 +85,15 @@ foreach ($pdf in $pdfFiles) {
 
     if ($pagesToRemove.Count -eq 0) {
         Write-Host "  No matching pages found. Skipping."
-        $avDoc.Close($true)
+        $pdDoc.Close() | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
     }
 
     if ($pagesToRemove.Count -eq $pageCount) {
         Write-Host "  WARNING: All $pageCount page(s) match the phrase. Skipping file to avoid an empty document."
-        $avDoc.Close($true)
+        $pdDoc.Close() | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
     }
 
@@ -113,17 +109,12 @@ foreach ($pdf in $pdfFiles) {
     # Save over the original file
     $pdDoc.Save(1, $filePath)  # 1 = PDSaveFull
 
-    $avDoc.Close($true)
+    $pdDoc.Close() | Out-Null
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
 
     $remainingPages = $pageCount - $pagesToRemove.Count
     Write-Host "  Saved. $remainingPages page(s) remaining."
 }
-
-# --- Cleanup ---
-$acrobatApp.Exit()
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($acrobatApp) | Out-Null
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
 
