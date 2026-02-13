@@ -11,38 +11,30 @@
 # Any page containing this phrase anywhere in its text will be removed.
 $Phrase = "Information Missing on the Document"
 
-# --- Folder Selection Dialogs ---
+# --- Modern Folder Picker (with address bar) via Shell COM ---
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# Helper: show a folder dialog that appears in front of all windows
 function Select-Folder {
-    param ([string]$Description)
+    param ([string]$Title)
 
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description  = $Description
-    $dialog.ShowNewFolderButton = $true
+    $shell = New-Object -ComObject Shell.Application
+    $folder = $shell.BrowseForFolder(0, $Title, 0x00000010 + 0x00000040, 0)
+    #   0x00000010 = BIF_EDITBOX       (adds a text field to type/paste a path)
+    #   0x00000040 = BIF_NEWDIALOGSTYLE (modern resizable dialog with address bar)
 
-    # Create an invisible TopMost owner so the dialog isn't hidden
-    $owner = New-Object System.Windows.Forms.Form
-    $owner.TopMost = $true
-    $owner.StartPosition = 'Manual'
-    $owner.Location = New-Object System.Drawing.Point(-9999, -9999)
-    $owner.Size = New-Object System.Drawing.Size(1, 1)
-    $owner.Show()
-    $owner.Hide()
-
-    $result = $dialog.ShowDialog($owner)
-    $owner.Dispose()
-
-    if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
-        return $null
+    if ($folder -and $folder.Self) {
+        $path = $folder.Self.Path
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+        return $path
     }
-    return $dialog.SelectedPath
+
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    return $null
 }
 
 # Prompt for input folder
-$inputFolder = Select-Folder -Description "Select the INPUT folder containing PDF files"
+$inputFolder = Select-Folder -Title "Select the INPUT folder containing PDF files"
 if (-not $inputFolder) {
     Write-Host "No input folder selected. Exiting."
     exit
@@ -50,7 +42,7 @@ if (-not $inputFolder) {
 Write-Host "Input folder:  $inputFolder"
 
 # Prompt for output folder
-$outputFolder = Select-Folder -Description "Select the OUTPUT folder for processed PDFs"
+$outputFolder = Select-Folder -Title "Select the OUTPUT folder for processed PDFs"
 if (-not $outputFolder) {
     Write-Host "No output folder selected. Exiting."
     exit
@@ -72,6 +64,10 @@ if ($pdfFiles.Count -eq 0) {
 
 Write-Host "Found $($pdfFiles.Count) PDF file(s). Processing..."
 Write-Host ""
+
+# --- Counters for summary ---
+$totalProcessed = 0
+$totalModified  = 0
 
 # --- Process each PDF ---
 $acrobatApp = New-Object -ComObject AcroExch.App
@@ -126,6 +122,7 @@ foreach ($pdf in $pdfFiles) {
         $avDoc.Close($true)
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
+        $totalProcessed++
         continue
     }
 
@@ -158,6 +155,8 @@ foreach ($pdf in $pdfFiles) {
     if ($saveOk) {
         $remainingPages = $pageCount - $pagesToRemove.Count
         Write-Host "  Saved ($remainingPages page(s) remaining)."
+        $totalProcessed++
+        $totalModified++
     } else {
         Write-Host "  ERROR: Save failed for '$($pdf.Name)'."
     }
@@ -171,3 +170,11 @@ $acrobatApp.Exit()
 
 Write-Host ""
 Write-Host "Done. All files processed to: $outputFolder"
+
+# --- Summary popup ---
+[System.Windows.Forms.MessageBox]::Show(
+    "Total Processed: $totalProcessed`nTotal Modified: $totalModified",
+    "Remove Pages - Complete",
+    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxIcon]::Information
+) | Out-Null
