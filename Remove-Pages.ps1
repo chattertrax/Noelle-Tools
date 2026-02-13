@@ -87,7 +87,7 @@ foreach ($pdf in $pdfFiles) {
 
     if ($pagesToRemove.Count -eq 0) {
         Write-Host "  No matching pages found. Skipping."
-        $avDoc.Close($false)
+        $avDoc.Close($true)
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
@@ -95,7 +95,7 @@ foreach ($pdf in $pdfFiles) {
 
     if ($pagesToRemove.Count -eq $pageCount) {
         Write-Host "  WARNING: All $pageCount page(s) match the phrase. Skipping file to avoid an empty document."
-        $avDoc.Close($false)
+        $avDoc.Close($true)
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
         continue
@@ -113,7 +113,7 @@ foreach ($pdf in $pdfFiles) {
     # Save over the original file
     $pdDoc.Save(1, $filePath)  # 1 = PDSaveFull
 
-    $avDoc.Close($false)
+    $avDoc.Close($true)
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
 
