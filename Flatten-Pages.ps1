@@ -138,6 +138,7 @@ try {
         try {
             $printOk = $avDoc.PrintPagesEx(
                 0, ($pageCount - 1), 2, $true, $true, $false, $false,
+                0,               # bPrintAsImage (0 = vector, preserves quality)
                 $printerName, "", ""
             )
         } catch {
@@ -177,7 +178,7 @@ try {
             Write-Host "  ERROR: Print failed for '$($pdf.Name)'."
         }
 
-        $avDoc.Close($true)
+        $avDoc.Close($true) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
 
