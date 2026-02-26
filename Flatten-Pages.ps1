@@ -106,6 +106,12 @@ $totalProcessed = 0
 $totalFlattened  = 0
 $results         = @()
 
+# --- Temporarily set "Adobe PDF" as the default printer ---
+#     PrintPagesEx always prints to the default printer (it does not
+#     accept a printer name), so we swap the default, print, then restore.
+$origDefaultPrinter = (Get-CimInstance -ClassName Win32_Printer -Filter "Default=$true").Name
+(New-Object -ComObject WScript.Network).SetDefaultPrinter($printerName)
+
 try {
     # --- Process each PDF ---
     $acrobatApp = New-Object -ComObject AcroExch.App
@@ -136,11 +142,11 @@ try {
         # document into a new PDF, flattening all interactive content.
         $printOk = $false
         try {
+            # PrintPagesEx parameters (all numeric):
+            #   nFirstPage, nLastPage, nPSLevel, bBinaryOk, bShrinkToFit,
+            #   bReverse, bFarEastFontOpt, bEmitHalftones, iPageOption
             $printOk = $avDoc.PrintPagesEx(
-                0, ($pageCount - 1), 2, $true, $true, $false, $false,
-                0,               # bPrintAsImage (0 = vector, preserves quality)
-                0,               # bEmitHalftones
-                $printerName, "", ""
+                0, ($pageCount - 1), 2, 1, 1, 0, 0, 0, 0
             )
         } catch {
             Write-Host "  ERROR: PrintPagesEx failed - $_"
@@ -194,6 +200,11 @@ try {
     [System.GC]::WaitForPendingFinalizers()
 }
 finally {
+    # --- Restore original default printer ---
+    if ($origDefaultPrinter) {
+        (New-Object -ComObject WScript.Network).SetDefaultPrinter($origDefaultPrinter)
+    }
+
     # --- Restore original "Adobe PDF" registry settings ---
     if ($null -ne $origOutputFolder) {
         Set-ItemProperty $adobePDFRegPath -Name "OutputFolder" -Value $origOutputFolder -Type String
