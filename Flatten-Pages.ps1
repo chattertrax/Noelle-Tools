@@ -1,9 +1,11 @@
 # ============================================================
 # Flatten-Pages.ps1
 # "Prints to PDF" each PDF in a user-selected input folder,
-# flattening form fields, annotations, and comments into the
-# page content. Flattened copies are saved to the chosen
-# output folder; originals are not modified.
+# producing a flat copy with no form fields, annotations, or
+# interactive elements. Originals are not modified.
+#
+# Uses the "Adobe PDF" virtual printer (included with Acrobat
+# Pro) configured for silent output to the chosen output folder.
 # ============================================================
 
 # --- Modern Folder Picker (with address bar) via Shell COM ---
@@ -28,6 +30,19 @@ function Select-Folder {
     return $null
 }
 
+# --- Check for "Adobe PDF" printer (ships with Acrobat Pro) ---
+$printerName = "Adobe PDF"
+$printerCheck = Get-Printer -Name $printerName -ErrorAction SilentlyContinue
+if (-not $printerCheck) {
+    [System.Windows.Forms.MessageBox]::Show(
+        "The 'Adobe PDF' printer was not found.`n`nThis printer is installed with Adobe Acrobat Pro and is required for flattening PDFs.",
+        "Flatten Pages - Error",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error
+    ) | Out-Null
+    exit
+}
+
 # Prompt for input folder
 $inputFolder = Select-Folder -Title "Select the INPUT folder containing PDF files"
 if (-not $inputFolder) {
@@ -43,6 +58,17 @@ if (-not $outputFolder) {
     exit
 }
 Write-Host "Output folder: $outputFolder"
+
+# Safety: input and output must differ to avoid overwriting originals
+if ($inputFolder.TrimEnd('\') -eq $outputFolder.TrimEnd('\')) {
+    [System.Windows.Forms.MessageBox]::Show(
+        "Input and output folders must be different to protect your original files.",
+        "Flatten Pages - Error",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error
+    ) | Out-Null
+    exit
+}
 
 # Safety check: make sure output folder exists
 if (-not (Test-Path -LiteralPath $outputFolder)) {
@@ -60,60 +86,124 @@ if ($pdfFiles.Count -eq 0) {
 Write-Host "Found $($pdfFiles.Count) PDF file(s). Processing..."
 Write-Host ""
 
+# --- Configure "Adobe PDF" printer for silent output ---
+$adobePDFRegPath = "HKCU:\Software\Adobe\Adobe PDF"
+
+if (-not (Test-Path $adobePDFRegPath)) {
+    New-Item -Path $adobePDFRegPath -Force | Out-Null
+}
+
+# Save original settings so we can restore them when done
+$origOutputFolder = (Get-ItemProperty $adobePDFRegPath -Name "OutputFolder" -ErrorAction SilentlyContinue).OutputFolder
+$origPrompt       = (Get-ItemProperty $adobePDFRegPath -Name "PromptForPDFFilename" -ErrorAction SilentlyContinue).PromptForPDFFilename
+
+# Point output to our folder and suppress the Save As dialog
+Set-ItemProperty $adobePDFRegPath -Name "OutputFolder"           -Value $outputFolder -Type String
+Set-ItemProperty $adobePDFRegPath -Name "PromptForPDFFilename"   -Value 0             -Type DWord
+
 # --- Counters and results list for summary ---
 $totalProcessed = 0
 $totalFlattened  = 0
 $results         = @()
 
-# --- Process each PDF ---
-$acrobatApp = New-Object -ComObject AcroExch.App
-$acrobatApp.Hide()
+try {
+    # --- Process each PDF ---
+    $acrobatApp = New-Object -ComObject AcroExch.App
+    $acrobatApp.Hide()
 
-foreach ($pdf in $pdfFiles) {
-    $filePath = $pdf.FullName
-    $savePath = Join-Path $outputFolder $pdf.Name
-    Write-Host "Processing: $($pdf.Name)"
+    foreach ($pdf in $pdfFiles) {
+        $filePath = $pdf.FullName
+        $savePath = Join-Path $outputFolder $pdf.Name
+        Write-Host "Processing: $($pdf.Name)"
 
-    $avDoc = New-Object -ComObject AcroExch.AVDoc
+        # Remove a previous output file so we can detect fresh creation
+        if (Test-Path $savePath) {
+            Remove-Item $savePath -Force
+        }
 
-    if (-not $avDoc.Open($filePath, "")) {
-        Write-Host "  WARNING: Could not open '$($pdf.Name)'. Skipping."
+        $avDoc = New-Object -ComObject AcroExch.AVDoc
+
+        if (-not $avDoc.Open($filePath, "")) {
+            Write-Host "  WARNING: Could not open '$($pdf.Name)'. Skipping."
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
+            continue
+        }
+
+        $pdDoc     = $avDoc.GetPDDoc()
+        $pageCount = $pdDoc.GetNumPages()
+
+        # Print every page through "Adobe PDF" — this re-renders the
+        # document into a new PDF, flattening all interactive content.
+        $printOk = $false
+        try {
+            $printOk = $avDoc.PrintPagesEx(
+                0, ($pageCount - 1), 2, $true, $true, $false, $false,
+                $printerName, "", ""
+            )
+        } catch {
+            Write-Host "  ERROR: PrintPagesEx failed - $_"
+        }
+
+        $status = "Error"
+
+        if ($printOk) {
+            # Wait for Distiller to finish writing the output file
+            $maxWait = 120
+            $elapsed = 0
+            while (-not (Test-Path $savePath) -and $elapsed -lt $maxWait) {
+                Start-Sleep -Seconds 1
+                $elapsed++
+            }
+
+            if (Test-Path $savePath) {
+                # Let the file finish writing (size stabilises)
+                Start-Sleep -Seconds 1
+                $s1 = (Get-Item $savePath).Length
+                Start-Sleep -Seconds 1
+                $s2 = (Get-Item $savePath).Length
+
+                if ($s1 -eq $s2 -and $s1 -gt 0) {
+                    Write-Host "  Flattened and saved ($pageCount page(s))."
+                    $totalFlattened++
+                    $status = "Flattened"
+                } else {
+                    Write-Host "  WARNING: Output file may be incomplete for '$($pdf.Name)'."
+                    $status = "Incomplete"
+                }
+            } else {
+                Write-Host "  ERROR: Output file was not created within the timeout for '$($pdf.Name)'."
+            }
+        } else {
+            Write-Host "  ERROR: Print failed for '$($pdf.Name)'."
+        }
+
+        $avDoc.Close($true)
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
         [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
-        continue
+
+        $totalProcessed++
+        $results += [PSCustomObject]@{ FileName = $pdf.Name; Pages = $pageCount; Status = $status }
     }
 
-    $pdDoc     = $avDoc.GetPDDoc()
-    $pageCount = $pdDoc.GetNumPages()
-
-    # Use the Acrobat JavaScript bridge to flatten all form fields,
-    # annotations, and comments into the page content.
-    $jsObj = $pdDoc.GetJSObject()
-    $jsObj.flattenPages()
-
-    # Save flattened PDF to the output folder (1 = PDSaveFull)
-    $saveOk = $pdDoc.Save(1, $savePath)
-
-    $avDoc.Close($true)
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($pdDoc) | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($avDoc) | Out-Null
-
-    if ($saveOk) {
-        Write-Host "  Flattened and saved ($pageCount page(s))."
-        $totalProcessed++
-        $totalFlattened++
-        $results += [PSCustomObject]@{ FileName = $pdf.Name; Pages = $pageCount; Status = "Flattened" }
+    # --- Cleanup Acrobat ---
+    $acrobatApp.Exit()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($acrobatApp) | Out-Null
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+}
+finally {
+    # --- Restore original "Adobe PDF" registry settings ---
+    if ($null -ne $origOutputFolder) {
+        Set-ItemProperty $adobePDFRegPath -Name "OutputFolder" -Value $origOutputFolder -Type String
     } else {
-        Write-Host "  ERROR: Save failed for '$($pdf.Name)'."
-        $totalProcessed++
-        $results += [PSCustomObject]@{ FileName = $pdf.Name; Pages = $pageCount; Status = "Error" }
+        Remove-ItemProperty $adobePDFRegPath -Name "OutputFolder" -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $origPrompt) {
+        Set-ItemProperty $adobePDFRegPath -Name "PromptForPDFFilename" -Value $origPrompt -Type DWord
+    } else {
+        Remove-ItemProperty $adobePDFRegPath -Name "PromptForPDFFilename" -ErrorAction SilentlyContinue
     }
 }
-
-# --- Cleanup ---
-$acrobatApp.Exit()
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($acrobatApp) | Out-Null
-[System.GC]::Collect()
-[System.GC]::WaitForPendingFinalizers()
 
 Write-Host ""
 Write-Host "Done. All files processed to: $outputFolder"
