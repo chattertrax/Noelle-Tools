@@ -139,6 +139,7 @@ try {
             $printOk = $avDoc.PrintPagesEx(
                 0, ($pageCount - 1), 2, $true, $true, $false, $false,
                 0,               # bPrintAsImage (0 = vector, preserves quality)
+                0,               # bEmitHalftones
                 $printerName, "", ""
             )
         } catch {
