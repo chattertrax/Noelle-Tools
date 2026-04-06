@@ -1,0 +1,40 @@
+{
+  "FieldRanges": [
+    {
+      "Prefix": "field",
+      "Start": 130,
+      "End": 147
+    },
+    {
+      "Prefix": "field",
+      "Start": 150,
+      "End": 167
+    },
+    {
+      "Prefix": "field",
+      "Start": 170,
+      "End": 187
+    },
+    {
+      "Prefix": "field",
+      "Start": 190,
+      "End": 207
+    },
+    {
+      "Prefix": "field",
+      "Start": 210,
+      "End": 227
+    },
+    {
+      "Prefix": "field",
+      "Start": 230,
+      "End": 247
+    },
+    {
+      "Prefix": "field",
+      "Start": 250,
+      "End": 267
+    }
+  ],
+  "RemovePhrase": "Information Missing on the Document"
+}
